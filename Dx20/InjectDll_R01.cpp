@@ -5,7 +5,6 @@
 #define WIN32_LEAN_AND_MEAN
 
 typedef LONG(NTAPI* RTLCREATEUSERTHREAD)(HANDLE, PSECURITY_DESCRIPTOR, BOOLEAN, ULONG, SIZE_T, SIZE_T, PTHREAD_START_ROUTINE, PVOID, PHANDLE, LPVOID);
-typedef DWORD(WINAPI* GETTHREADID)(HANDLE);
 
 BOOL ReadFileData(WCHAR* filename, BYTE** buff, DWORD* size)
 {
@@ -33,9 +32,11 @@ BOOL ReadFileData(WCHAR* filename, BYTE** buff, DWORD* size)
 		CloseHandle(hFile);
 		return FALSE;
 	}
+
 	BYTE* buffPtr = *buff;
 	DWORD numLeft = liSize.LowPart;
 	DWORD numRead = 0;
+
 	while (numLeft > 0) {
 		if (!ReadFile(hFile, buffPtr, numLeft, &numRead, NULL)) {
 			CloseHandle(hFile);
@@ -50,32 +51,13 @@ BOOL ReadFileData(WCHAR* filename, BYTE** buff, DWORD* size)
 	return TRUE;
 }
 
-BOOL wcs2dw(WCHAR* wp, DWORD* dp)
-{
-	if (wp == NULL || dp == NULL)
-		return FALSE;
-	WCHAR* endp = NULL;
-	DWORD dw = wcstoul(wp, &endp, 10);
-	if (*endp != L'\x00')
-		return FALSE;
-	*dp = dw;
-	return TRUE;
-}
-
-DWORD GetThreadIdFromHandle(HANDLE hThread)
-{
-	GETTHREADID fpGetThreadId = (GETTHREADID)GetProcAddress(GetModuleHandleA("kernel32"), "GetThreadId");
-	if (fpGetThreadId)
-		return fpGetThreadId(hThread);
-	return 0;
-}
-
 int wmain(int argc, WCHAR* argv[])
 {	
 	if (argc !=3) {
 		wprintf(L"usage: InjectDll.exe <X64DLL> [X64PID]\n");
 		return 1;
 	}
+
 	// read in the dll
 	BYTE* image = NULL;
 	DWORD imageSize = 0;
@@ -84,29 +66,36 @@ int wmain(int argc, WCHAR* argv[])
 		return 0;
 	}
 
-	DWORD pid;
-	if (!wcs2dw(argv[2], &pid)) {
-		wprintf(L"PID error: %s\n", argv[2]);
+	//turn pid->Dword
+	WCHAR* wcNull = NULL;
+	DWORD pid= wcstoul(argv[2],&wcNull, 10);
+	if (*wcNull!=L'\x00') {
+		wprintf(L"PID format Error: [%s]\n", argv[2]);
 		return 0;
 	}
 
-	HANDLE hProc = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_CREATE_THREAD, FALSE, pid);
+	//get process handle
+	HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
 	if (hProc == NULL) {
 		wprintf(L"Failed to open process for injection: %lu\n", pid);
 		return 1;
 	}
 
+	//get loader
 	BYTE* loader = (BYTE*)loader_x64;
 	size_t loaderSize =  sizeof(loader_x64);
 
+	//set and creat remote image size
 	const size_t remoteShellcodeSize = loaderSize + imageSize;
 	void* remoteShellcode = VirtualAllocEx(hProc, 0, remoteShellcodeSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 	if (remoteShellcode == NULL) {
 		wprintf(L"Failed to allocate remote memory\n");
 		return 1;
 	}
+
 	wprintf(L"Writing %lu bytes into process at %p\n", (DWORD)remoteShellcodeSize, remoteShellcode);
 
+	// write shellcode and image to process
 	SIZE_T numWritten = 0;
 	if (!WriteProcessMemory(hProc, remoteShellcode, loader, loaderSize, &numWritten) ||
 		!WriteProcessMemory(hProc, (BYTE*)remoteShellcode + loaderSize, image, imageSize, &numWritten)) {
@@ -118,15 +107,15 @@ int wmain(int argc, WCHAR* argv[])
 	HANDLE hThread = NULL;
 
 	RTLCREATEUSERTHREAD fpRtlCreateUserThread = (RTLCREATEUSERTHREAD)GetProcAddress(GetModuleHandleA("ntdll"), "RtlCreateUserThread");
+	
 	if (fpRtlCreateUserThread == NULL) {
 		wprintf(L"Failed to resolve ntdll!RtlCreateUserThread\n");
 		return 1;
 	}
+
 	wprintf(L"Calling RtlCreateUserThread\n");
 	fpRtlCreateUserThread(hProc, NULL, FALSE, 0, 0, 0, (LPTHREAD_START_ROUTINE)remoteShellcode, NULL, &hThread, NULL);
-	if (hThread != NULL)
-		wprintf(L"Created remote thread %lu\n", GetThreadIdFromHandle(hThread));
-
+	wprintf(L"--- Success ---\n");
 
 	return 1;
 }
