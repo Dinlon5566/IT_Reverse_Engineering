@@ -32,6 +32,7 @@ BOOL doCreateEvent(LPDEBUG_EVENT debugEvent) {
 		printf("%02X", i);
 	}
 
+	// 將第一個 BYTE 改成 0xCC
 	WriteProcessMemory(debugInfo.hProcess, pfWriteFile, &chINT3, sizeof(BYTE), NULL);
 
 	ReadProcessMemory(debugInfo.hProcess, pfWriteFile, arr, sizeof(arr), NULL);
@@ -52,44 +53,48 @@ BOOL doExceptionEvent(LPDEBUG_EVENT debugEvent) {
 	PEXCEPTION_RECORD64 debugRecord = (PEXCEPTION_RECORD64)&debugEvent->u.Exception.ExceptionRecord;
 	BYTE arr[10];
 
+	// 確認 Exception 為 WriteFile。
 	if (debugRecord->ExceptionCode == EXCEPTION_BREAKPOINT &&
 		debugRecord->ExceptionAddress==(DWORD64)pfWriteFile
 		) {
 		printf("--- Find WriteFile Called! ---\n");
 		printf("APIAddress : %p\n",(DWORD64)pfWriteFile);
 		
+		// 把之前改過的 API 位置改回去
 		WriteProcessMemory(debugInfo.hProcess, pfWriteFile, &chOrgByte, sizeof(BYTE), NULL);
 
+		// 輸出 API 位置
 		ReadProcessMemory(debugInfo.hProcess, pfWriteFile, arr, sizeof(arr), NULL);
 		for (BYTE i : arr) {
 			printf("%02X", i);
 		}
 		printf("\n");
 
+		// 取得 Register
 		context.ContextFlags = CONTEXT_FULL;
 		GetThreadContext(debugInfo.hThread,&context);
 
-		LPOVERLAPPED arg5_lpoverlapped = NULL;
-		ReadProcessMemory(debugInfo.hProcess, (LPVOID)(context.Rsp + 0x28), &arg5_lpoverlapped, sizeof(DWORD), NULL);
-		
+		// 輸出 Register，方便查看
 		printf("\nRegister data :\n");
 		printf("RAX :%p\n", context.Rax);
 		printf("RBX :%p\n", context.Rbx);
 		printf("RCX :%p\n", context.Rcx);
 		printf("RDX :%p\n", context.Rdx);
 		printf("R8  :%p\n", context.R8);
-		printf("R9  :%p\n", context.R9);
-		printf("arg5:%p\n\n", arg5_lpoverlapped);
 
+		// 將傳遞值由寄存器撈上來
 		ulpBufAddress = context.Rdx;
 		ulpWriteLen = context.R8;
 
+		// 宣告緩衝區空間與清空
 		pBuf = (PBYTE)malloc(ulpWriteLen+1);
 		memset(pBuf,0,ulpWriteLen+1);
 
+		// 讀取文字位置的內容到緩衝區
 		ReadProcessMemory(debugInfo.hProcess,(LPVOID)ulpBufAddress,pBuf,ulpWriteLen,NULL);
 		printf("Org String :\n%s\n",pBuf);
 		
+		// 把字都變成大寫
 		for (unsigned int i = 0; i < (unsigned int)ulpWriteLen; i++) {
 			if ('a' <= pBuf[i] && pBuf[i] <= 'z') {
 				pBuf[i] -= 0x20;
@@ -98,15 +103,21 @@ BOOL doExceptionEvent(LPDEBUG_EVENT debugEvent) {
 
 		printf("Aft String :\n%s\n", pBuf);
 		
+		// 將緩衝區內容存到原本放字串的位置
 		WriteProcessMemory(debugInfo.hProcess,(LPVOID)ulpBufAddress,pBuf,ulpWriteLen,NULL);
+
+		// 你沒用了
 		free(pBuf);
 		
+		// 把執行位置調到 WriteFile 的位置
 		context.Rip = (DWORD64)pfWriteFile;
+		// 然後把 Context 的資料設置給 Thread
 		SetThreadContext(debugInfo.hThread,&context);
 
+		// 原程序可以繼續行動了
 		ContinueDebugEvent(debugEvent->dwProcessId,debugEvent->dwThreadId,DBG_CONTINUE);
 		
-		
+		// 把 WriteFile 的第一 BYTE 改回 0xCC
 		WriteProcessMemory(debugInfo.hProcess, pfWriteFile, &chINT3, sizeof(BYTE),NULL);
 		
 		printf("-- - Write Change end-- - \n");
@@ -152,7 +163,7 @@ int main(int argc, char* argv[]) {
 	}
 	printf("--- PID : %d ---\n", dwPID);
 	if (!DebugActiveProcess(dwPID)) {
-		printf("Debug Fail");
+		printf("Debug Fail\n");
 		printf("Error code : %d", GetLastError());
 		return 1;
 	}
